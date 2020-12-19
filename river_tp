@@ -1,0 +1,181 @@
+import pandas as pd
+from datetime import datetime 
+import MetaTrader5 as mt5 
+import numpy as np 
+import math as m
+
+%%time
+
+market_makers = [ 'VVARA170' ,  'VVARA165' ,  'VVARA175' , 'VVARA180',
+                 'COGNA480' ,  'COGNA490' ,  'COGNA500',
+                 'PETRA28' ,  'PETRA27' ,  'PETRA29',
+                 'VALEA871' ,  'VALEA887' ,  'VALEA847',
+                 'BBDCA270' ,  'BBDCA280' ,  'BBDCA266',
+                 'ITUBA308' ,  'ITUBA300' ,  'ITUBA329',
+                 'CSNAA290' ,  'CSNAA300' ,  'CSNAA310']
+
+#Substituindo a letra da call pela letra da put no algoritmo:
+nome_opcao = market_makers[0]
+nome_opcao = nome_opcao.split()
+nome_opcao = nome_opcao[0]
+letra = nome_opcao[4]
+
+lista_call = ['A','B', 'C', 'D', 'E', 'F', 'G', 'H', 'I' , 'J', 'K', 'L']
+lista_put = ['M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X' ]
+
+letra_call = lista_call.index(letra)
+letra_put = lista_put[letra_call]
+letra_put
+
+listnew = []
+
+for string in market_makers:
+    listnew.append(string)
+    ticker = string.replace(letra, letra_put)
+    if ticker[4] == ticker[2]:
+        lista = ticker.replace(ticker[4], nome_opcao[4], 1)
+    elif ticker[0] == ticker[4]:
+        lista = ticker.replace(ticker[4], nome_opcao[4], 1)
+    elif ticker[1] == ticker[4]:
+        lista = ticker.replace(ticker[4], nome_opcao[4], 1)
+    elif ticker[2] == ticker[4]:
+        lista = ticker.replace(ticker[4], nome_opcao[4], 1)
+    elif ticker[3] == ticker[4]:
+        lista = ticker.replace(ticker[4], nome_opcao[4], 1)
+    else:
+        lista = ticker
+    listnew.append(lista)
+
+#criando as listas para armazenar as variáveis
+opcao_nome_serie = []
+target_price_list = []
+ult_cot_call = []
+
+#lOOP DO ALGORITMO
+for i in listnew:  
+    #Importando o dataframe principal do backtest
+    url = "https://opcoes.net.br/{}".format(i) 
+    df = pd.read_html(url, decimal=',', thousands='.', header=None)[0][:-2][:5]
+    
+    #Separando o nome da opção para classificar depois
+    nome = df.columns[1]
+    nome_opcao = []
+    for a in nome:
+        nome_opcao.append(a)
+    nome_opcao = nome_opcao[0]
+    nome_opcao = nome_opcao.split()
+    nome_opcao = nome_opcao[0]
+    letra = nome_opcao[4].lower()
+    
+    #Separando o strike da opção para classificar depois
+    strike_nome = pd.read_html(url, decimal=',', thousands='.')[1]
+    lista_call = ['a','b', 'c', 'd', 'e', 'f', 'g', 'h', 'i' , 'j', 'k', 'l']
+    if letra in lista_call:
+        strike_nome = strike_nome.loc[strike_nome['CALL'] == nome_opcao]
+        strike_nome = strike_nome.iloc[:,0]
+        strike_nome = strike_nome.values.tolist()
+        strike_nome = strike_nome[0]
+    else:
+        strike_nome = strike_nome.loc[strike_nome['PUT'] == nome_opcao]
+        strike_nome = strike_nome.iloc[:,0]
+        strike_nome = strike_nome.values.tolist()
+        strike_nome = strike_nome[0]
+
+    #Tratando o dataframe principal renomeando as colunas
+    df.columns = df.columns.droplevel()
+    df.rename(columns = {'Unnamed: 0_level_1' : 'Date'}, inplace=True)
+    df.drop(df.columns[[2,3,6,9,10,14,15]], axis=1, inplace=True)
+    df.set_index('Date', inplace=True)
+    df.index = pd.to_datetime(df.index, format='%d/%m/%Y')
+    df = df.sort_values(by='Date', ascending=True)
+    df.columns = ['Min.Op', 'Ult.Op', 'Max.Op', 'Vol. Fin.', 'Min.Vol','Ult.Vol', 'Max.Vol', 'Min.Stock','Ult.Stock', 'Max.Stock']
+
+    #Inserindo colunas de previsão linear
+    df.insert(loc=0, column='Opcao', value = nome_opcao)
+    df.insert(loc=1, column='Strike', value = strike_nome)
+    df.insert(loc=5, column='Prev.Min', value=(df['Min.Op'].shift(1) + (df['Min.Op'].shift(1) - df['Min.Op'].shift(2))))
+    df.insert(loc=10, column='Prev.Vol', value=(df['Ult.Vol'].shift(1) + (df['Ult.Vol'].shift(1) - df['Ult.Vol'].shift(2))))
+    df.insert(loc=14,column='Prev.Stock', value=(df['Ult.Stock'].shift(1) + (df['Ult.Stock'].shift(1) - df['Ult.Stock'].shift(2))))
+
+    #FÓRMULA AVI 
+    df['AVI'] = df.apply(lambda x: -(m.fabs((x['Prev.Stock'] - x['Strike']))) / (m.log10(m.fabs(x['Prev.Vol'] * 
+                                                                             m.sqrt(m.fabs(x['Prev.Min']+1))))), axis=1)
+
+    #Colunas para calucar o preço alvo e retorno do backtest
+    df['TP'] = df.apply(lambda x: ((x['Prev.Min'] * x['AVI']) - x['Prev.Min']) * -1  if x['AVI'] <= 0 else 0, axis = 1)
+    df['Ordem.TP'] = df.apply(lambda x: x['TP'] if x['TP'] >= x['Min.Op'] and x['TP'] <= x['Max.Op'] else 0, axis = 1 )
+    df['Lucro'] = df.apply(lambda x: (x['Ult.Op'] - x['Ordem.TP']) if x['Ordem.TP'] != 0 else 0, axis = 1)
+    df['Lucro(%)'] = df.apply(lambda x: (x['Lucro'] / x['Ordem.TP']) if x['Ordem.TP'] != 0 else 0, axis = 1)
+
+    #Calculcando as previsões baseado no último dado
+    prev_min = df.iloc[-1, 2] + (df.iloc[-1, 2] - df.iloc[-2, 2])
+    prev_vol = df.iloc[-1, 8] + (df.iloc[-1, 8] - df.iloc[-2, 8])
+    prev_stock = df.iloc[-1, 12] + (df.iloc[-1, 12] - df.iloc[-2, 12])
+    strike = df.iloc[-1, 1] 
+
+    avi = -(m.fabs(prev_stock - strike)) / (m.log10(m.fabs(prev_vol * m.sqrt(m.fabs(prev_min+1)))))
+    tp = ((prev_min * avi) - prev_min) * -1
+    cotacao = df['Ult.Op'][-1]
+    
+    
+    #incluindo as variáveis na lista
+    opcao_nome_serie.append(i)
+    target_price_list.append(tp)
+    ult_cot_call.append(cotacao)
+            
+    dados = pd.DataFrame(data = {'Tickers': opcao_nome_serie, 'Ult_Cotacao': ult_cot_call, 'Target_Price': target_price_list})
+    
+#Eliminando valores negativos do Target_Price e substituindo valores nulos por 0
+dados.Target_Price = np.where(dados.Target_Price < 0, 0, dados.Target_Price)
+dados = dados.fillna(0)
+
+#aplicando filtro com intervalo de 30% com relação a última cotação 
+variacao = 30
+ordem_tp = dados.loc[dados['Target_Price'] <= dados['Ult_Cotacao'] * (1+variacao/100)]
+ordem_tp = ordem_tp.loc[dados['Target_Price'] >= dados['Ult_Cotacao'] * (1-variacao/100)]
+ordem_tp = ordem_tp.loc[dados['Target_Price'] > 0]
+
+#Criando a coluna de diferença % com relação a última cotação
+ordem_tp['Variacao_(%)'] = ordem_tp.apply(lambda x: (x['Target_Price'] / x['Ult_Cotacao'] -1) *100, axis=1)
+ordem_tp.reset_index(drop=True, inplace=True)
+
+#Criando linhas para armazenar os dados
+# lista_put = []
+# lista_tp_put =[]
+# ult_cot_put = []
+
+
+# linha = 1
+# total_linhas = len(dados)
+
+# while linha <= total_linhas: 
+#     lista_put.append(dados.iloc[linha,0])
+
+#     linha = linha + 2
+    
+# linha = 1
+# while linha <= total_linhas: 
+#     ult_cot_put.append(dados.iloc[linha,1])
+
+#     linha = linha + 2
+
+# linha = 1
+# while linha <= total_linhas: 
+#     lista_tp_put.append(dados.iloc[linha,2])
+
+#     linha = linha + 2
+    
+# linha = 1
+# while linha <= total_linhas: 
+#     dados.drop(linha, inplace=True)
+
+#     linha = linha + 2
+
+
+# dados['PUT'] = lista_put
+# dados['Ult.Cota_Put'] = ult_cot_put
+# dados['Target_Price_Put'] = lista_tp_put  
+
+# dados.reset_index(drop=True, inplace=True)
+
+ordem_tp
