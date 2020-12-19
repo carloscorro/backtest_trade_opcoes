@@ -1,0 +1,191 @@
+import pandas as pd
+import numpy as np 
+import math as m
+
+%%time
+
+def backtest_total(opt):
+    
+    market_makers = []
+    
+    for i in opt:
+        a = market_makers.append(i)
+
+    #Substituindo a letra da call pela letra da put no algoritmo:
+    nome_opcao = market_makers[0]
+    nome_opcao = nome_opcao.split()
+    nome_opcao = nome_opcao[0]
+    letra = nome_opcao[4]
+
+    lista_call = ['A','B', 'C', 'D', 'E', 'F', 'G', 'H', 'I' , 'J', 'K', 'L']
+    lista_put = ['M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X' ]
+
+    letra_call = lista_call.index(letra)
+    letra_put = lista_put[letra_call]
+    letra_put
+
+    listnew = []
+
+    for string in market_makers:
+        listnew.append(string)
+        ticker = string.replace(letra, letra_put)
+        if ticker[4] == ticker[2]:
+            lista = ticker.replace(ticker[4], nome_opcao[4], 1)
+        elif ticker[0] == ticker[4]:
+            lista = ticker.replace(ticker[4], nome_opcao[4], 1)
+        elif ticker[1] == ticker[4]:
+            lista = ticker.replace(ticker[4], nome_opcao[4], 1)
+        elif ticker[2] == ticker[4]:
+            lista = ticker.replace(ticker[4], nome_opcao[4], 1)
+        elif ticker[3] == ticker[4]:
+            lista = ticker.replace(ticker[4], nome_opcao[4], 1)
+        else:
+            lista = ticker
+        listnew.append(lista)
+
+    #Filtros
+    volume_fin = 150000
+    capital_port = 50000
+    capital_opcao = capital_port / len(listnew)  
+    capital_total = capital_opcao * 2 
+    dias_uteis = 20
+    ultima_semana = 0
+
+    #criando as listas para armazenar as variáveis
+    retorno = []
+    qt_operacoes_dados = []
+    opcao_nome_serie = []
+
+
+    for i in listnew:  
+        #Importando o dataframe principal do backtest e não opera a última semana
+        url = "https://opcoes.net.br/{}".format(i) 
+        df = pd.read_html(url, decimal=',', thousands='.', header=None)[0][:-2]
+        df = df[0:dias_uteis]
+        df = df[ultima_semana:]
+
+        #Separando o nome da opção para classificar depois
+        nome = df.columns[1]
+        nome_opcao = []
+        for a in nome:
+            nome_opcao.append(a)
+        nome_opcao = nome_opcao[0]
+        nome_opcao = nome_opcao.split()
+        nome_opcao = nome_opcao[0]
+        letra = nome_opcao[4].lower()
+
+        #Separando o strike da opção para classificar depois
+        strike_nome = pd.read_html(url, decimal=',', thousands='.')[1]
+        lista_call = ['a','b', 'c', 'd', 'e', 'f', 'g', 'h', 'i' , 'j', 'k', 'l']
+        if letra in lista_call:
+            strike_nome = strike_nome.loc[strike_nome['CALL'] == nome_opcao]
+            strike_nome = strike_nome.iloc[:,0]
+            strike_nome = strike_nome.values.tolist()
+            strike_nome = strike_nome[0]
+        else:
+            strike_nome = strike_nome.loc[strike_nome['PUT'] == nome_opcao]
+            strike_nome = strike_nome.iloc[:,0]
+            strike_nome = strike_nome.values.tolist()
+            strike_nome = strike_nome[0]
+
+        #Tratando o dataframe principal renomeando as colunas
+        df.columns = df.columns.droplevel()
+        df.rename(columns = {'Unnamed: 0_level_1' : 'Date'}, inplace=True)
+        df.drop(df.columns[[2,3,6,9,10,14,15]], axis=1, inplace=True)
+        df.set_index('Date', inplace=True)
+        df.index = pd.to_datetime(df.index, format='%d/%m/%Y')
+        df = df.sort_values(by='Date', ascending=True)
+        df.columns = ['Min.Op', 'Ult.Op', 'Max.Op', 'Vol. Fin.', 'Min.Vol','Ult.Vol', 'Max.Vol', 'Min.Stock','Ult.Stock', 'Max.Stock']
+
+        #Inserindo colunas de previsão linear
+        df.insert(loc=0, column='Opcao', value = nome_opcao)
+        df.insert(loc=1, column='Strike', value = strike_nome)
+        df.insert(loc=5, column='Prev.Min', value=(df['Min.Op'].shift(1) + (df['Min.Op'].shift(1) - df['Min.Op'].shift(2))))
+        df.insert(loc=10, column='Prev.Vol', value=(df['Ult.Vol'].shift(1) + (df['Ult.Vol'].shift(1) - df['Ult.Vol'].shift(2))))
+        df.insert(loc=14,column='Prev.Stock', value=(df['Ult.Stock'].shift(1) + (df['Ult.Stock'].shift(1) - df['Ult.Stock'].shift(2))))
+
+        #FÓRMULA AVI 
+        df['AVI'] = df.apply(lambda x: -(m.fabs((x['Prev.Stock'] - x['Strike']))) / (m.log10(m.fabs(x['Prev.Vol'] * m.sqrt(m.fabs(x['Prev.Min']+1))))), axis=1)
+
+        #Colunas para calucar o preço alvo e retorno do backtest
+        df['TP'] = df.apply(lambda x: ((x['Prev.Min'] * x['AVI']) - x['Prev.Min']) * -1  if x['AVI'] <= 0 else 0, axis = 1)
+        df['Ordem.TP'] = df.apply(lambda x: x['TP'] if x['TP'] >= x['Min.Op'] and x['TP'] <= x['Max.Op'] else 0, axis = 1 )
+        df['Lucro'] = df.apply(lambda x: (x['Ult.Op'] - x['Ordem.TP']) if x['Ordem.TP'] != 0 else 0, axis = 1)
+        df['Lucro(%)'] = df.apply(lambda x: (x['Lucro'] / x['Ordem.TP']) if x['Ordem.TP'] != 0 else 0, axis = 1)
+
+        #Filtrando por Voluma Financeiro
+        filtro = df['Vol. Fin.'] > volume_fin
+        df = df[filtro]
+
+        #Retornando a rentabilidade do backtest e a quantidade de operações
+        qt_operacoes = (df['Lucro(%)'] != 0).sum()
+        ret_estrategia = df['Lucro(%)'].values.tolist()
+        ret = capital_opcao * (1+(np.prod(np.array(ret_estrategia) + 1) - 1))
+
+
+        #incluindo as variáveis na lista
+        retorno.append(ret.round(0))
+        opcao_nome_serie.append(i)
+        qt_operacoes_dados.append(qt_operacoes)                                    
+        dados = pd.DataFrame({'CALL':opcao_nome_serie, 'Capital_Call':retorno, 'Qtd_Operacoes_Call':qt_operacoes_dados})
+
+
+    #Tratando o DataFrame com as colunas Call e Put e suas respectivas rentabilidades
+    linha = 1
+    lista_put = []
+    lista_ret_put = []
+    lista_qt_put = []
+
+    total_linhas = len(dados)
+
+    while linha <= total_linhas: 
+        lista_put.append(dados.iloc[linha ,0])
+
+        linha = linha + 2
+
+    linha = 1
+
+    while linha <= total_linhas: 
+        lista_ret_put.append(dados.iloc[linha ,1])
+
+        linha = linha + 2
+
+    linha = 1
+    while linha <= total_linhas: 
+        lista_qt_put.append(dados.iloc[linha ,2])
+
+        linha = linha + 2
+
+    linha = 1
+    while linha <= total_linhas: 
+        dados.drop(linha, inplace=True)
+
+        linha = linha + 2
+
+    dados['PUT'] = lista_put
+    dados['Capital_Put'] = lista_ret_put
+    dados['Qtd_Operacoes_Put'] = lista_qt_put
+
+    dados.reset_index(drop=True, inplace=True)
+
+    dados.insert(loc=6,column='Lucro(R$)', value=(dados['Capital_Call'] + dados['Capital_Put'] - capital_total))
+    dados.insert(loc=7,column='Lucro(%)', value=((dados['Lucro(R$)'] / capital_total) * 100))
+
+    retornos_total = dados['Lucro(%)'].values.tolist()
+    ret = []
+    produto = (100 / len(dados['Lucro(%)']))/100
+
+    for i in retornos_total:
+        ola = produto * i
+        ret.append(ola)
+
+    retorno = sum(ret) 
+    lucro_total = sum(dados['Lucro(R$)'])
+    capital_investido = capital_port
+    qtd_opera = sum(dados['Qtd_Operacoes_Call'] + dados['Qtd_Operacoes_Put'])
+    nome_op = 'Mercedes'
+    resultado_backtest = pd.DataFrame({'Portfolio':nome_op, 'Capital_Investido(R$)':capital_investido
+                                        ,'Lucro_Total(R$)':lucro_total, 'Qtd_Operacoes_Total': qtd_opera, 
+                                       'Retorno_Total(%)':retorno}, index=[0])
+
+    return dados, resultado_backtest
