@@ -1,0 +1,120 @@
+import pandas as pd
+from datetime import datetime 
+import MetaTrader5 as mt5 
+import numpy as np 
+import math as m
+from datetime import datetime
+import time
+from pandas_datareader import data as pdr
+import statistics
+from fractions import Fraction as F
+
+# estabelecemos a conexão ao MetaTrader 5
+if not mt5.initialize():
+    print("initialize() Falha ao Iniciar seu metra Trade 5")
+    mt5.shutdown()
+
+#testando se o ativo é valido 
+symbol = 'WDOF21'
+symbol_info = mt5.symbol_info(symbol)
+if symbol_info is None:
+    print(symbol, "Não encontrato")
+    mt5.shutdown()
+    quit()
+
+#adicionado symbol se nao existir
+if not symbol_info.visible:
+    print('Symbol Não visivel, tentnado adicionar')
+    if not mt5.symbol_select(symbol,True):
+        print('symbol_select({{}})failed, exit', symbol)
+        mt5.shutdown()
+        quit()
+
+tempo = time.time() + 18000
+lista = ['WING21']
+while time.time() < tempo:
+    
+    for i in lista:
+        
+        symbol = i
+        desvio = 1
+        ativo = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M1, 0, 10)
+        ativo = pd.DataFrame(ativo)
+        ativo['time'] = pd.to_datetime(ativo['time'], unit='s')
+        ativo['mm5'] = ativo['close'].ewm(span=5).mean()
+        ativo['3 desv_cima'] = (ativo['mm5'].ewm(span=5).std() * desvio) + ativo['mm5']
+        ativo['3 desv_baixo'] = ativo['mm5'] - (ativo['mm5'].ewm(span=5).std() * desvio) 
+        ativo.set_index('time', inplace = True)    
+
+        #PREPARANDO ORDEM DE COMPRA 
+        #FILTROS
+        target_profit = 50 
+        # stop_loss = 20
+        lot = 100.0
+
+        point = mt5.symbol_info(symbol).point
+        price = mt5.symbol_info_tick(symbol).ask
+        desviation = 1
+        request = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": symbol,
+            "volume": lot,
+            "type": mt5.ORDER_TYPE_BUY,
+            "price": price,
+            # "sl": price - stop_loss * point,
+            "tp": price + target_profit * point,
+            "magic": 234000,
+            "desviation": desviation,
+            "comment": "prython script open",
+            "type_time":mt5.ORDER_TIME_GTC,
+            'type_filling':mt5.ORDER_FILLING_RETURN,
+
+              }
+        
+                    #PREPARANDO ORDEM DE VENDA 
+            
+        point = mt5.symbol_info(symbol).point
+        price=mt5.symbol_info_tick(symbol).bid
+        desviation = 1
+        request2={
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": symbol,
+            "volume": lot,
+            "type": mt5.ORDER_TYPE_SELL,
+            "price": price,
+            # "sl": price + stop_loss * point,
+            "tp": price - target_profit * point,    
+            "deviation": desviation,
+            "magic": 234000,
+            "comment": "python script close",
+            "type_time": mt5.ORDER_TIME_GTC,
+            "type_filling": mt5.ORDER_FILLING_RETURN,
+              }
+        
+        
+        tick = mt5.symbol_info_tick(symbol)
+        entrada_compra = round(ativo['3 desv_cima'][-1], 2)
+        entrada_venda = round(ativo['3 desv_baixo'][-1], 2)
+        
+        print (f'{symbol} - Tick Atual: {tick.last}, {desvio} std acima: {entrada_compra}, {desvio} std abaixo {entrada_venda}','Compra:', 
+               tick.last > ativo['3 desv_cima'][-1] and (tick.last - ativo['close'][-2] <= 0), 'Venda:',
+               tick.last < ativo['3 desv_baixo'][-1] and (tick.last - ativo['close'][-2]) >= 0, end  = '\r')
+        
+        #Enviando ORDEM DE VENDA se tiver 3 desvio padrões acima 
+        if tick.last > ativo['3 desv_cima'][-1] and (ativo['mm5'][-1] - ativo['mm5'][-2]) <= 0.1:
+
+            if mt5.positions_get(symbol=symbol) == ():
+                #enviadno ordem de compra 
+                result = mt5.order_send(request2)
+                print(f'1. Ordem COMPRA enviada:{lot} de {symbol} ao preço de {price} com desvio_1 de {desviation}',end  = '\r')
+        
+        # Enviando ORDEM DE COMPRA se tiver 3 desvio padrões abaixo:          
+        if tick.last < ativo['3 desv_baixo'][-1] and (ativo['mm5'][-1] - ativo['mm5'][-2]) >= 0.1:
+            if mt5.positions_get(symbol=symbol) == (): 
+                result = mt5.order_send(request)
+                #verificando a resultado da execulção 
+                print(f'2. Ordem VENDA enviada: {lot} de {symbol} ao preço de {price} com desvio_3 de {desviation}',end  = '\r')
+        
+        
+        
+        time.sleep(0.5)
